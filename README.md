@@ -80,6 +80,25 @@ By default, outputs will be saved in the `output_dgm/` directory.
 - `coding_agent.py` main implementation of the initial coding agent
 - `DGM_outer.py` entry point for running the DGM algorithm
 
+## Local, single-LLM trading self-improvement (no seed strategy)
+
+This repo includes a minimal ProFiT-style loop that lets one local LLM design and self-improve trading strategies from scratch (no fixed template).
+
+1) Place data (copy locally; large files stay ignored):
+- Put tick CSVs under `data/raw/` (same layout as your external folders).
+
+2) Ingest + resample ticks to bars:
+```
+python trading_data.py --raw-root data/raw --freq 1min --tz Asia/Kolkata --output-dir data/processed
+```
+
+3) Run self-improvement (local LLM only; default `hf-local:hf_models/Qwen2.5-7B-Instruct`):
+```
+python trading_self_improve.py --data data/processed/NIFTY-I.NFO_1min.parquet --iterations 3 --cash 100000 --commission 0.0005
+```
+
+Outputs land in `output_selfimprove_local/<run_id>/` with per-iteration strategy code and metrics. The LLM must invent a full `GeneratedStrategy` using `backtesting.py`; no seed strategy is provided.
+
 ## Logs from Experiments
 This [google drive folder](https://drive.google.com/drive/folders/1Kcu9TbIa9Z50pJ7S6hH9omzzD1pxIYZC?usp=sharing) contains all the foundation model output logs from the experiments shown in the paper.
 

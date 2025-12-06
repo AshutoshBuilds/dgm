@@ -27,3 +27,6 @@ transformers
 torch
 accelerate
 safetensors
+pandas
+pyarrow
+backtesting

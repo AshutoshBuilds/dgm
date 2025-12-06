@@ -32,3 +32,8 @@ analysis/output/
 .docker.env
 DockerDesktopInstaller.exe
 hf_models/
+
+# Local trading data artifacts
+data/raw/
+data/processed/
+output_selfimprove_local/
