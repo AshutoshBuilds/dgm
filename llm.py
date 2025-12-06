@@ -6,6 +6,8 @@ import re
 import anthropic
 import backoff
 import openai
+from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+import torch
 
 MAX_OUTPUT_TOKENS = 4096
 AVAILABLE_LLMS = [
@@ -40,6 +42,20 @@ AVAILABLE_LLMS = [
     "deepseek-coder",
     "deepseek-reasoner",
 ]
+
+def create_hf_client(repo_or_path: str):
+    tokenizer = AutoTokenizer.from_pretrained(repo_or_path, use_fast=True)
+    # If CUDA is available, prefer bfloat16/float16; otherwise CPU with float32
+    dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+    model = AutoModelForCausalLM.from_pretrained(repo_or_path, device_map="auto", torch_dtype=dtype)
+    if getattr(model.config, "pad_token_id", None) is None and getattr(tokenizer, "eos_token_id", None) is not None:
+        try:
+            model.config.pad_token_id = tokenizer.eos_token_id
+        except Exception:
+            pass
+    text_gen = pipeline("text-generation", model=model, tokenizer=tokenizer)
+    return {"pipeline": text_gen, "tokenizer": tokenizer, "model": model, "repo_id": repo_or_path}
+
 
 def create_client(model: str):
     """
@@ -80,7 +96,30 @@ def create_client(model: str):
         client = openai.OpenAI(
             api_key=os.environ["OPENROUTER_API_KEY"],
             base_url="https://openrouter.ai/api/v1"
-        ), model
+        )
+        return client, model
+    elif model.startswith("hf-local:") or model.startswith("hf-local/") or model.startswith("hf/"):
+        if model.startswith("hf-local:"):
+            repo_or_path = model.split(":", 1)[1]
+        else:
+            repo_or_path = model.split("/", 1)[1]
+        print(f"Using Hugging Face transformers model {repo_or_path} (local if path).")
+        # Prefer local cache under HF_HOME
+        hf_home = os.getenv("HF_HOME")
+        if hf_home and os.path.isdir(hf_home):
+            os.environ["HF_HOME"] = hf_home
+            # If a relative path like 'hf_models/...' is provided inside container, rewrite to HF_HOME
+            norm = repo_or_path.replace("\\", "/")
+            if not os.path.isabs(repo_or_path) and norm.startswith("hf_models/"):
+                suffix = norm[len("hf_models/"):]
+                repo_or_path = os.path.join(hf_home, suffix)
+        # Resolve relative local path on host to absolute path if it exists
+        if not os.path.isabs(repo_or_path):
+            local_candidate = os.path.abspath(repo_or_path)
+            if os.path.exists(local_candidate):
+                repo_or_path = local_candidate
+        client = create_hf_client(repo_or_path)
+        return client, model
     else:
         raise ValueError(f"Model {model} not supported.")
 
@@ -176,7 +215,7 @@ def get_response_from_llm(
         system_message,
         print_debug=False,
         msg_history=None,
-        temperature=0.7,
+        temperature=0.3,
 ):
     if msg_history is None:
         msg_history = []
@@ -291,6 +330,93 @@ def get_response_from_llm(
         content = response.choices[0].message.content
         new_msg_history = new_msg_history + [{"role": "assistant", "content": content}]
         resoning_content = response.choices[0].message.reasoning_content
+    elif model.startswith("hf/") or model.startswith("hf-local:") or model.startswith("hf-local/"):
+        # Normalize to use the instantiated HF client regardless of prefix
+        # Build prompt from system + history + user
+        def _to_text(val):
+            if isinstance(val, str):
+                return val
+            if isinstance(val, list):
+                texts = []
+                for block in val:
+                    if isinstance(block, dict) and "text" in block:
+                        texts.append(block["text"])
+                    elif hasattr(block, "text"):
+                        texts.append(getattr(block, "text"))
+                return "\n".join(texts)
+            return str(val)
+        hist = ""
+        for m in (msg_history or []):
+            role = m.get("role", "user") if isinstance(m, dict) else "user"
+            content_val = m.get("content") if isinstance(m, dict) else m
+            hist += f"\n[{role.upper()}]\n{_to_text(content_val)}\n"
+        # Build chat prompt using tokenizer chat_template if available
+        messages = (
+            (msg_history or []) + [{"role": "user", "content": msg}]
+        )
+        prompt = None
+        tokenizer = client["tokenizer"]
+        try:
+            if getattr(tokenizer, "chat_template", None):
+                # Normalize to list of {role, content: string}
+                norm_msgs = [{"role": "system", "content": system_message}]
+                for m in messages:
+                    role = m.get("role", "user")
+                    content_val = m.get("content")
+                    if isinstance(content_val, list):
+                        pieces = []
+                        for block in content_val:
+                            if isinstance(block, dict) and "text" in block:
+                                pieces.append(block["text"])
+                            elif hasattr(block, "text"):
+                                pieces.append(getattr(block, "text"))
+                        content_val = "\n".join(pieces)
+                    norm_msgs.append({"role": role, "content": content_val})
+                prompt = tokenizer.apply_chat_template(norm_msgs, tokenize=False, add_generation_prompt=True)
+        except Exception:
+            prompt = None
+        if not prompt:
+            # Fallback simple SFT-style prompt
+            def _to_text(val):
+                if isinstance(val, str):
+                    return val
+                if isinstance(val, list):
+                    texts = []
+                    for block in val:
+                        if isinstance(block, dict) and "text" in block:
+                            texts.append(block["text"])
+                        elif hasattr(block, "text"):
+                            texts.append(getattr(block, "text"))
+                    return "\n".join(texts)
+                return str(val)
+            hist = ""
+            for m in (msg_history or []):
+                role = m.get("role", "user") if isinstance(m, dict) else "user"
+                content_val = m.get("content") if isinstance(m, dict) else m
+                hist += f"\n[{role.upper()}]\n{_to_text(content_val)}\n"
+            prompt = f"[SYSTEM]\n{system_message}\n{hist}\n[USER]\n{msg}\n[ASSISTANT]\n"
+        # Truncate prompt to model context window
+        model_max = getattr(tokenizer, "model_max_length", 2048)
+        if not isinstance(model_max, int) or model_max <= 0 or model_max > 32768:
+            model_max = 2048
+        # Use more room for output for better JSON/toolfulness
+        max_new_tokens = min(512, MAX_OUTPUT_TOKENS)
+        max_input_tokens = max(768, model_max - max_new_tokens - 32)
+        toks = tokenizer(prompt, add_special_tokens=False)
+        input_ids = toks["input_ids"]
+        if len(input_ids) > max_input_tokens:
+            input_ids = input_ids[-max_input_tokens:]
+            prompt = tokenizer.decode(input_ids, skip_special_tokens=True)
+        gen = client["pipeline"](
+            prompt,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            do_sample=True,
+            pad_token_id=getattr(tokenizer, "pad_token_id", None) or getattr(tokenizer, "eos_token_id", None),
+        )
+        full_text = gen[0].get("generated_text", "") if isinstance(gen, list) else str(gen)
+        content = full_text[len(prompt):] if full_text.startswith(prompt) else full_text
+        new_msg_history = (msg_history or []) + [{"role": "user", "content": msg}, {"role": "assistant", "content": content}]
     else:
         raise ValueError(f"Model {model} not supported.")
     if print_debug:

@@ -2,6 +2,7 @@ import argparse
 import datetime
 import json
 import os
+import shutil
 import docker
 
 from llm import create_client, get_response_from_llm, extract_json_between_markers
@@ -24,11 +25,37 @@ from utils.docker_utils import (
     safe_log,
 )
 
+
+def _load_env_file(env_path: str = ".docker.env") -> None:
+    """Load KEY=VALUE lines from a local env file into os.environ if not already set."""
+    try:
+        if os.path.isfile(env_path):
+            with open(env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, value = line.split("=", 1)
+                    key = key.strip()
+                    value = value.strip()
+                    if key and value and key not in os.environ:
+                        os.environ[key] = value
+    except Exception as _:
+        # Best-effort; ignore loading failures
+        pass
+
+# Ensure local env is loaded for host-side diagnosis and container env passthrough
+_load_env_file()
+
 dataset = None
-diagnose_model = 'o1-2024-12-17'
+diagnose_model = os.getenv('DIAGNOSE_MODEL', 'hf-local:hf_models/Mistral-7B-Instruct-v0.3')
 
 def diagnose_problem(entry, commit, root_dir, out_dir, patch_files=[], max_attempts=3, polyglot=False):
     client = create_client(diagnose_model)
+    if client[1].startswith('hf'):  # lower temp for local HF to favor JSON
+        diag_temp = 0.1
+    else:
+        diag_temp = 0.3
     if polyglot:
         diagnose_sys_message, diagnose_prompt = get_diagnose_prompt_polyglot(
             entry, commit, root_dir, out_dir, dataset,
@@ -47,6 +74,7 @@ def diagnose_problem(entry, commit, root_dir, out_dir, patch_files=[], max_attem
             system_message=diagnose_sys_message,
             print_debug=False,
             msg_history=None,
+            temperature=diag_temp,
         )
         safe_log(f"Message history: {msg_history}")
         response_json = extract_json_between_markers(response)
@@ -87,6 +115,10 @@ def diagnose_improvement(
         dict: The improvement diagnosis.
     """
     client = create_client(diagnose_model)
+    if client[1].startswith('hf'):
+        diag_temp = 0.1
+    else:
+        diag_temp = 0.3
     diagnose_sys_message, diagnose_prompt = get_diagnose_improvement_prompt(
         entry, parent_commit, root_dir, model_patch_file, out_dir, run_id, dataset,
         patch_files=patch_files,
@@ -100,6 +132,7 @@ def diagnose_improvement(
             system_message=diagnose_sys_message,
             print_debug=False,
             msg_history=None,
+            temperature=diag_temp,
         )
         safe_log(f"Message history: {msg_history}")
         response_json = extract_json_between_markers(response)
@@ -263,13 +296,22 @@ def self_improve(
     # Create and start the Docker container
     image_name = "dgm"
     container_name = f"dgm-container-{run_id}"
-    client = docker.from_env()
+    client = docker.DockerClient(base_url='npipe:////./pipe/docker_engine', timeout=120)
     # Remove any existing container with the same name
     remove_existing_container(client, container_name)
     # Now create and start the container
+    # Set up volumes for model files to avoid copying large files
+    volumes = {}
+    if os.path.isdir('hf_models'):
+        hf_models_path = os.path.abspath('hf_models')
+        volumes[hf_models_path] = {'bind': '/dgm/hf_models', 'mode': 'ro'}
+        safe_log(f"Mounting hf_models from {hf_models_path} to /dgm/hf_models")
+
     container = build_dgm_container(
         client, root_dir, image_name, container_name,
         force_rebuild=force_rebuild,
+        use_gpu=True,
+        volumes=volumes,
     )
     container.start()
 
@@ -343,6 +385,9 @@ def self_improve(
         "AWS_ACCESS_KEY_ID": os.getenv('AWS_ACCESS_KEY_ID'),
         "AWS_SECRET_ACCESS_KEY": os.getenv('AWS_SECRET_ACCESS_KEY'),
         "OPENAI_API_KEY": os.getenv('OPENAI_API_KEY'),
+        "CODE_MODEL": os.getenv('CODE_MODEL'),
+        "DIAGNOSE_MODEL": os.getenv('DIAGNOSE_MODEL'),
+        "HF_HOME": "/dgm/hf_models",
     }
     cmd = [
         "timeout", "1800",  # 30min timeout
@@ -354,6 +399,7 @@ def self_improve(
         "--outdir", "/dgm/",
         "--test_description", test_description,
         "--self_improve",
+        "--instance_id", os.getenv('SWE_ENTRY', 'django__django-10999'),
     ]
     exec_result = container.exec_run(cmd, environment=env_vars, workdir='/')
     log_container_output(exec_result)
@@ -430,8 +476,12 @@ def main():
     parser.add_argument('--test_task_list', default=None, type=str, help='List of tasks to evaluate the self-improvement')
     args = parser.parse_args()
 
-    # Copy cached initial version into experiment dir
-    os.system(f"cp -r initial/ {args.output_dir}")
+    # Copy cached initial version into experiment dir (Windows-safe)
+    if os.path.isdir('initial'):
+        dst = os.path.join(args.output_dir, 'initial')
+        if os.path.exists(dst):
+            shutil.rmtree(dst)
+        shutil.copytree('initial', dst)
 
     metadata = self_improve(
         parent_commit=args.parent_commit,

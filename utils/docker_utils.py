@@ -5,6 +5,11 @@ from pathlib import Path
 import tarfile
 from typing import Optional, Union
 import docker
+try:
+    from docker.types import DeviceRequest
+    DOCKER_TYPES_AVAILABLE = True
+except ImportError:
+    DOCKER_TYPES_AVAILABLE = False
 
 # Thread-local storage for loggers
 _thread_local = threading.local()
@@ -34,7 +39,7 @@ def setup_logger(log_file):
         logger.removeHandler(handler)
 
     # Create file handler with lock
-    handler = logging.FileHandler(log_file)
+    handler = logging.FileHandler(log_file, encoding='utf-8')
     handler.setLevel(logging.INFO)
     handler.stream.lock = threading.Lock()
     
@@ -107,6 +112,8 @@ def build_dgm_container(
         image_name='app',
         container_name='app-container',
         force_rebuild=False,
+        use_gpu=True,
+        volumes=None,
     ):
     """
     Build the Docker image for the dgm app and start a container from it.
@@ -130,7 +137,40 @@ def build_dgm_container(
 
     try:
         # Run the container
-        container = client.containers.run(image=image_name, name=container_name, detach=True)
+        run_kwargs = {
+            "image": image_name,
+            "name": container_name,
+            "detach": True,
+        }
+
+        # Add volumes if specified
+        if volumes:
+            run_kwargs["volumes"] = volumes
+
+        # Set up GPU support if requested
+        if use_gpu:
+            safe_log("Configuring GPU support for container...")
+            run_kwargs["runtime"] = "nvidia"
+
+            # Add NVIDIA environment variables
+            run_kwargs["environment"] = {
+                "NVIDIA_VISIBLE_DEVICES": "all",
+                "NVIDIA_DRIVER_CAPABILITIES": "compute,utility",
+                "CUDA_VISIBLE_DEVICES": "0"
+            }
+
+            # Add GPU device requests if Docker types are available
+            if DOCKER_TYPES_AVAILABLE:
+                try:
+                    run_kwargs["device_requests"] = [DeviceRequest(count=-1, capabilities=[["gpu"]])]
+                    safe_log("GPU device requests configured successfully")
+                except Exception as e:
+                    safe_log(f"Failed to configure GPU device requests: {e}")
+                    safe_log("Falling back to NVIDIA runtime only")
+            else:
+                safe_log("Docker types not available, using NVIDIA runtime only")
+
+        container = client.containers.run(**run_kwargs)
         safe_log(f"Container '{container_name}' started successfully.")
         return container
     except Exception as e:

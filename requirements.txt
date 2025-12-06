@@ -21,3 +21,9 @@ unidiff
 pytest
 pytest-asyncio
 async_timeout
+
+# Local HF models
+transformers
+torch
+accelerate
+safetensors

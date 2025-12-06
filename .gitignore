@@ -25,3 +25,10 @@ polyglot/predictions/
 
 final_results/
 analysis/output/
+
+# Local installer/cache artifacts
+.cache/
+.cursor/
+.docker.env
+DockerDesktopInstaller.exe
+hf_models/

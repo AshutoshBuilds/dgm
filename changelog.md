@@ -1,0 +1,3 @@
+- 10-Aug-2025 10:59:00 IST: Initialized `.cursor` scaffolding, added MCP servers, fixed argparse choices in `DGM_outer.py`, corrected return in `llm.py`. 
+- 06-Dec-2025 23:00:13 IST: Merged remote `coding_agent_polyglot` model selection with env override and added `.cursor/mcp.json` for `dgm`.
+- 06-Dec-2025 23:06:24 IST: Added ignore rules for local cache, installer, env, and model artifacts ahead of pulling upstream.

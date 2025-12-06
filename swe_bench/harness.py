@@ -80,6 +80,9 @@ def process_entry(entry, out_dname, model_name_or_path, model_patch_paths):
         copy_to_container(container, 'prompts/', '/dgm/prompts/')
         copy_to_container(container, 'llm.py', '/dgm/llm.py')
         copy_to_container(container, 'llm_withtools.py', '/dgm/llm_withtools.py')
+        # Copy local HF models if available
+        if Path('hf_models').exists():
+            copy_to_container(container, 'hf_models/', '/dgm/hf_models/')
         chat_history_file_container = f'/dgm/{chat_history_file.name}'
 
         # Install issue requirements
@@ -118,6 +121,9 @@ def process_entry(entry, out_dname, model_name_or_path, model_patch_paths):
             "AWS_ACCESS_KEY_ID": os.getenv('AWS_ACCESS_KEY_ID'),
             "AWS_SECRET_ACCESS_KEY": os.getenv('AWS_SECRET_ACCESS_KEY'),
             "OPENAI_API_KEY": os.getenv('OPENAI_API_KEY'),
+            "CODE_MODEL": os.getenv('CODE_MODEL'),
+            "DIAGNOSE_MODEL": os.getenv('DIAGNOSE_MODEL'),
+            "HF_HOME": "/dgm/hf_models",
         }
         safe_log("Running the agent")
         cmd = [

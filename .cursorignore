@@ -1,0 +1,11 @@
+venv/
+_pycache_/
+.vscode/
+.DS_Store
+.gitignore
+.cursorignore
+.git/
+.gitignore
+.cursorignore
+.git/
+.gitignore
