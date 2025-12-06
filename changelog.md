@@ -2,3 +2,4 @@
 - 06-Dec-2025 23:00:13 IST: Merged remote `coding_agent_polyglot` model selection with env override and added `.cursor/mcp.json` for `dgm`.
 - 06-Dec-2025 23:06:24 IST: Added ignore rules for local cache, installer, env, and model artifacts ahead of pulling upstream.
 - 06-Dec-2025 23:29:42 IST: Added local LLM trading pipeline (ingest, resample, backtest harness, seedless self-improve loop) and docs for usage.
+- 06-Dec-2025 23:43:11 IST: Added evolutionary search with UCB/MCTS pruning, container eval hook, lineage logging, and run CLI.

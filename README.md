@@ -99,6 +99,19 @@ python trading_self_improve.py --data data/processed/NIFTY-I.NFO_1min.parquet --
 
 Outputs land in `output_selfimprove_local/<run_id>/` with per-iteration strategy code and metrics. The LLM must invent a full `GeneratedStrategy` using `backtesting.py`; no seed strategy is provided.
 
+## Evolutionary tree with UCB/MCTS pruning (container-capable)
+
+- Evolution engine: `trading_evo.py` builds a population/generational tree, uses UCB1 (MCTS-style) for parent selection, and prunes low-value branches. Lineage and metrics are saved to `output_selfimprove_local_evo/<run_id>/lineage.json`.
+- Host run (fastest):
+```
+python trading_evo.py --data data/processed/NIFTY-I.NFO_1min.parquet --pop-size 20 --generations 15 --ucb-c 2.0
+```
+- Container eval (uses DGM Docker image; mounts data and hf_models):
+```
+python trading_evo.py --data data/processed/NIFTY-I.NFO_1min.parquet --pop-size 20 --generations 15 --ucb-c 2.0 --container
+```
+  - Ensure `hf_models/` exists locally (quantized to fit 24GB) and Docker with GPU is available. Data is read from `data/processed` (ignored by Git).
+
 ## Logs from Experiments
 This [google drive folder](https://drive.google.com/drive/folders/1Kcu9TbIa9Z50pJ7S6hH9omzzD1pxIYZC?usp=sharing) contains all the foundation model output logs from the experiments shown in the paper.
 
